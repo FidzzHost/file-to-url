@@ -3,7 +3,16 @@ import fs from "fs";
 import path from "path";
 import { v4 as uuidv4 } from "uuid";
 
-const IS_VERCEL = !!process.env.BLOB_READ_WRITE_TOKEN;
+const IS_VERCEL_ENV = !!process.env.VERCEL;
+const HAS_BLOB_TOKEN = !!process.env.BLOB_READ_WRITE_TOKEN;
+
+function useBlob(): boolean {
+  return HAS_BLOB_TOKEN;
+}
+
+function isVercelWithoutBlob(): boolean {
+  return IS_VERCEL_ENV && !HAS_BLOB_TOKEN;
+}
 
 const LOCAL_UPLOADS_DIR = path.join(process.cwd(), "uploads");
 const LOCAL_META_FILE = path.join(LOCAL_UPLOADS_DIR, "metadata.json");
@@ -169,12 +178,21 @@ async function blobDeleteFile(id: string): Promise<boolean> {
 
 // ── Public API (auto-selects storage backend) ───────────────────────
 
+function checkBlobRequired(): void {
+  if (isVercelWithoutBlob()) {
+    throw new Error(
+      "BLOB_READ_WRITE_TOKEN is not set. Please create a Vercel Blob store in your Vercel dashboard (Storage tab) and redeploy."
+    );
+  }
+}
+
 export async function saveFile(
   buffer: Buffer,
   originalName: string,
   mimeType: string
 ): Promise<FileMeta> {
-  if (IS_VERCEL) {
+  checkBlobRequired();
+  if (useBlob()) {
     return blobSaveFile(buffer, originalName, mimeType);
   }
   return localSaveFile(buffer, originalName, mimeType);
@@ -183,21 +201,24 @@ export async function saveFile(
 export async function getFileMeta(
   id: string
 ): Promise<FileMeta | undefined> {
-  if (IS_VERCEL) {
+  checkBlobRequired();
+  if (useBlob()) {
     return blobGetFileMeta(id);
   }
   return localGetFileMeta(id);
 }
 
 export async function getAllFiles(): Promise<FileMeta[]> {
-  if (IS_VERCEL) {
+  checkBlobRequired();
+  if (useBlob()) {
     return blobGetAllFiles();
   }
   return localGetAllFiles();
 }
 
 export async function getFileBuffer(id: string): Promise<Buffer | null> {
-  if (IS_VERCEL) {
+  checkBlobRequired();
+  if (useBlob()) {
     return blobGetFileBuffer(id);
   }
   return localGetFileBuffer(id);
@@ -206,14 +227,16 @@ export async function getFileBuffer(id: string): Promise<Buffer | null> {
 export async function getRedirectUrl(
   id: string
 ): Promise<string | null> {
-  if (IS_VERCEL) {
+  checkBlobRequired();
+  if (useBlob()) {
     return blobGetRedirectUrl(id);
   }
   return null;
 }
 
 export async function deleteFile(id: string): Promise<boolean> {
-  if (IS_VERCEL) {
+  checkBlobRequired();
+  if (useBlob()) {
     return blobDeleteFile(id);
   }
   return localDeleteFile(id);
