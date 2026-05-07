@@ -1,6 +1,5 @@
 import { NextRequest } from "next/server";
-import { getFileMeta, getFilePath } from "@/lib/storage";
-import fs from "fs";
+import { getFileMeta, getFileBuffer, getRedirectUrl } from "@/lib/storage";
 
 export const dynamic = "force-dynamic";
 
@@ -11,7 +10,7 @@ export async function GET(
   try {
     const { id } = await ctx.params;
 
-    const meta = getFileMeta(id);
+    const meta = await getFileMeta(id);
     if (!meta) {
       return Response.json(
         { success: false, error: "File not found" },
@@ -19,17 +18,20 @@ export async function GET(
       );
     }
 
-    const filePath = getFilePath(id);
-    if (!filePath) {
+    const redirectUrl = await getRedirectUrl(id);
+    if (redirectUrl) {
+      return Response.redirect(redirectUrl, 302);
+    }
+
+    const fileBuffer = await getFileBuffer(id);
+    if (!fileBuffer) {
       return Response.json(
         { success: false, error: "File data not found" },
         { status: 404 }
       );
     }
 
-    const fileBuffer = fs.readFileSync(filePath);
-
-    return new Response(fileBuffer, {
+    return new Response(new Uint8Array(fileBuffer), {
       status: 200,
       headers: {
         "Content-Type": meta.mimeType || "application/octet-stream",

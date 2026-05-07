@@ -5,7 +5,7 @@ export const dynamic = "force-dynamic";
 
 export async function GET(request: NextRequest) {
   try {
-    const files = getAllFiles();
+    const files = await getAllFiles();
 
     const baseUrl =
       request.headers.get("x-forwarded-proto") &&

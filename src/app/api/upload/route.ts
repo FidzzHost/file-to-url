@@ -44,7 +44,7 @@ export async function POST(request: NextRequest) {
 
     const arrayBuffer = await file.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
-    const meta = saveFile(buffer, file.name, file.type);
+    const meta = await saveFile(buffer, file.name, file.type);
 
     const baseUrl =
       request.headers.get("x-forwarded-proto") &&
