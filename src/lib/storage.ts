@@ -1,21 +1,5 @@
-import { put, list, del } from "@vercel/blob";
-import fs from "fs";
-import path from "path";
+import { createClient } from "@libsql/client";
 import { v4 as uuidv4 } from "uuid";
-
-const IS_VERCEL_ENV = !!process.env.VERCEL;
-const HAS_BLOB_TOKEN = !!process.env.BLOB_READ_WRITE_TOKEN;
-
-function useBlob(): boolean {
-  return HAS_BLOB_TOKEN;
-}
-
-function isVercelWithoutBlob(): boolean {
-  return IS_VERCEL_ENV && !HAS_BLOB_TOKEN;
-}
-
-const LOCAL_UPLOADS_DIR = path.join(process.cwd(), "uploads");
-const LOCAL_META_FILE = path.join(LOCAL_UPLOADS_DIR, "metadata.json");
 
 export interface FileMeta {
   id: string;
@@ -25,98 +9,64 @@ export interface FileMeta {
   extension: string;
   uploadedAt: string;
   url: string;
-  blobUrl?: string;
 }
 
-// ── Local filesystem storage ────────────────────────────────────────
+function getDb() {
+  const url = process.env.TURSO_DATABASE_URL;
+  const authToken = process.env.TURSO_AUTH_TOKEN;
 
-function ensureLocalDir() {
-  if (!fs.existsSync(LOCAL_UPLOADS_DIR)) {
-    fs.mkdirSync(LOCAL_UPLOADS_DIR, { recursive: true });
+  if (!url) {
+    throw new Error(
+      "TURSO_DATABASE_URL is not set. Please add it to your environment variables."
+    );
   }
+
+  return createClient({
+    url,
+    authToken: authToken || undefined,
+  });
 }
 
-function readLocalMeta(): FileMeta[] {
-  ensureLocalDir();
-  if (!fs.existsSync(LOCAL_META_FILE)) return [];
-  return JSON.parse(fs.readFileSync(LOCAL_META_FILE, "utf-8"));
+async function ensureTable() {
+  const db = getDb();
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS files (
+      id TEXT PRIMARY KEY,
+      original_name TEXT NOT NULL,
+      mime_type TEXT NOT NULL,
+      size INTEGER NOT NULL,
+      extension TEXT NOT NULL,
+      uploaded_at TEXT NOT NULL,
+      data BLOB NOT NULL
+    )
+  `);
 }
 
-function writeLocalMeta(data: FileMeta[]) {
-  ensureLocalDir();
-  fs.writeFileSync(LOCAL_META_FILE, JSON.stringify(data, null, 2));
-}
-
-function localSaveFile(
-  buffer: Buffer,
-  originalName: string,
-  mimeType: string
-): FileMeta {
-  ensureLocalDir();
-  const id = uuidv4();
-  const ext = path.extname(originalName) || "";
-  const filename = `${id}${ext}`;
-  fs.writeFileSync(path.join(LOCAL_UPLOADS_DIR, filename), buffer);
-
-  const meta: FileMeta = {
-    id,
-    originalName,
-    mimeType,
-    size: buffer.length,
-    extension: ext,
-    uploadedAt: new Date().toISOString(),
-    url: `/api/files/${id}`,
-  };
-
-  const all = readLocalMeta();
-  all.push(meta);
-  writeLocalMeta(all);
-  return meta;
-}
-
-function localGetFileMeta(id: string): FileMeta | undefined {
-  return readLocalMeta().find((f) => f.id === id);
-}
-
-function localGetAllFiles(): FileMeta[] {
-  return readLocalMeta();
-}
-
-function localGetFilePath(id: string): string | null {
-  const meta = localGetFileMeta(id);
-  if (!meta) return null;
-  const fp = path.join(LOCAL_UPLOADS_DIR, `${id}${meta.extension}`);
-  return fs.existsSync(fp) ? fp : null;
-}
-
-function localGetFileBuffer(id: string): Buffer | null {
-  const fp = localGetFilePath(id);
-  return fp ? fs.readFileSync(fp) : null;
-}
-
-function localDeleteFile(id: string): boolean {
-  const fp = localGetFilePath(id);
-  if (!fp) return false;
-  fs.unlinkSync(fp);
-  writeLocalMeta(readLocalMeta().filter((f) => f.id !== id));
-  return true;
-}
-
-// ── Vercel Blob storage ─────────────────────────────────────────────
-
-async function blobSaveFile(
+export async function saveFile(
   buffer: Buffer,
   originalName: string,
   mimeType: string
 ): Promise<FileMeta> {
-  const id = uuidv4();
-  const ext = path.extname(originalName) || "";
-  const blobPath = `uploads/${id}${ext}`;
+  await ensureTable();
+  const db = getDb();
 
-  const blob = await put(blobPath, buffer, {
-    access: "public",
-    contentType: mimeType,
-    addRandomSuffix: false,
+  const id = uuidv4();
+  const ext = originalName.includes(".")
+    ? "." + originalName.split(".").pop()
+    : "";
+
+  await db.execute({
+    sql: `INSERT INTO files (id, original_name, mime_type, size, extension, uploaded_at, data)
+          VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    args: [
+      id,
+      originalName,
+      mimeType,
+      buffer.length,
+      ext,
+      new Date().toISOString(),
+      buffer,
+    ],
   });
 
   return {
@@ -127,143 +77,90 @@ async function blobSaveFile(
     extension: ext,
     uploadedAt: new Date().toISOString(),
     url: `/api/files/${id}`,
-    blobUrl: blob.url,
   };
-}
-
-async function blobGetAllFiles(): Promise<FileMeta[]> {
-  const result = await list({ prefix: "uploads/" });
-  return result.blobs.map((blob) => {
-    const filename = blob.pathname.replace("uploads/", "");
-    const dotIndex = filename.indexOf(".");
-    const id = dotIndex > -1 ? filename.substring(0, dotIndex) : filename;
-    const ext = dotIndex > -1 ? filename.substring(dotIndex) : "";
-    return {
-      id,
-      originalName: filename,
-      mimeType: getMimeFromExt(ext),
-      size: blob.size,
-      extension: ext,
-      uploadedAt: blob.uploadedAt.toISOString(),
-      url: `/api/files/${id}`,
-      blobUrl: blob.url,
-    };
-  });
-}
-
-async function blobGetFileMeta(id: string): Promise<FileMeta | undefined> {
-  const allFiles = await blobGetAllFiles();
-  return allFiles.find((f) => f.id === id);
-}
-
-async function blobGetFileBuffer(id: string): Promise<Buffer | null> {
-  const meta = await blobGetFileMeta(id);
-  if (!meta?.blobUrl) return null;
-  const res = await fetch(meta.blobUrl);
-  if (!res.ok) return null;
-  return Buffer.from(await res.arrayBuffer());
-}
-
-async function blobGetRedirectUrl(id: string): Promise<string | null> {
-  const meta = await blobGetFileMeta(id);
-  return meta?.blobUrl || null;
-}
-
-async function blobDeleteFile(id: string): Promise<boolean> {
-  const meta = await blobGetFileMeta(id);
-  if (!meta?.blobUrl) return false;
-  await del(meta.blobUrl);
-  return true;
-}
-
-// ── Public API (auto-selects storage backend) ───────────────────────
-
-function checkBlobRequired(): void {
-  if (isVercelWithoutBlob()) {
-    throw new Error(
-      "BLOB_READ_WRITE_TOKEN is not set. Please create a Vercel Blob store in your Vercel dashboard (Storage tab) and redeploy."
-    );
-  }
-}
-
-export async function saveFile(
-  buffer: Buffer,
-  originalName: string,
-  mimeType: string
-): Promise<FileMeta> {
-  checkBlobRequired();
-  if (useBlob()) {
-    return blobSaveFile(buffer, originalName, mimeType);
-  }
-  return localSaveFile(buffer, originalName, mimeType);
 }
 
 export async function getFileMeta(
   id: string
 ): Promise<FileMeta | undefined> {
-  checkBlobRequired();
-  if (useBlob()) {
-    return blobGetFileMeta(id);
-  }
-  return localGetFileMeta(id);
+  await ensureTable();
+  const db = getDb();
+
+  const result = await db.execute({
+    sql: `SELECT id, original_name, mime_type, size, extension, uploaded_at
+          FROM files WHERE id = ?`,
+    args: [id],
+  });
+
+  if (result.rows.length === 0) return undefined;
+
+  const row = result.rows[0];
+  return {
+    id: row.id as string,
+    originalName: row.original_name as string,
+    mimeType: row.mime_type as string,
+    size: row.size as number,
+    extension: row.extension as string,
+    uploadedAt: row.uploaded_at as string,
+    url: `/api/files/${row.id}`,
+  };
 }
 
 export async function getAllFiles(): Promise<FileMeta[]> {
-  checkBlobRequired();
-  if (useBlob()) {
-    return blobGetAllFiles();
-  }
-  return localGetAllFiles();
+  await ensureTable();
+  const db = getDb();
+
+  const result = await db.execute(
+    `SELECT id, original_name, mime_type, size, extension, uploaded_at
+     FROM files ORDER BY uploaded_at DESC`
+  );
+
+  return result.rows.map((row) => ({
+    id: row.id as string,
+    originalName: row.original_name as string,
+    mimeType: row.mime_type as string,
+    size: row.size as number,
+    extension: row.extension as string,
+    uploadedAt: row.uploaded_at as string,
+    url: `/api/files/${row.id}`,
+  }));
 }
 
-export async function getFileBuffer(id: string): Promise<Buffer | null> {
-  checkBlobRequired();
-  if (useBlob()) {
-    return blobGetFileBuffer(id);
-  }
-  return localGetFileBuffer(id);
-}
-
-export async function getRedirectUrl(
+export async function getFileBuffer(
   id: string
-): Promise<string | null> {
-  checkBlobRequired();
-  if (useBlob()) {
-    return blobGetRedirectUrl(id);
+): Promise<Buffer | null> {
+  await ensureTable();
+  const db = getDb();
+
+  const result = await db.execute({
+    sql: `SELECT data FROM files WHERE id = ?`,
+    args: [id],
+  });
+
+  if (result.rows.length === 0) return null;
+
+  const data = result.rows[0].data;
+  if (data === null || data === undefined) return null;
+  if (data instanceof ArrayBuffer) {
+    return Buffer.from(data);
   }
-  return null;
+  if (ArrayBuffer.isView(data)) {
+    return Buffer.from(data.buffer, data.byteOffset, data.byteLength);
+  }
+  if (typeof data === "string") {
+    return Buffer.from(data, "base64");
+  }
+  return Buffer.from(data as unknown as Uint8Array);
 }
 
 export async function deleteFile(id: string): Promise<boolean> {
-  checkBlobRequired();
-  if (useBlob()) {
-    return blobDeleteFile(id);
-  }
-  return localDeleteFile(id);
-}
+  await ensureTable();
+  const db = getDb();
 
-function getMimeFromExt(ext: string): string {
-  const map: Record<string, string> = {
-    ".png": "image/png",
-    ".jpg": "image/jpeg",
-    ".jpeg": "image/jpeg",
-    ".gif": "image/gif",
-    ".webp": "image/webp",
-    ".svg": "image/svg+xml",
-    ".mp4": "video/mp4",
-    ".webm": "video/webm",
-    ".mp3": "audio/mpeg",
-    ".wav": "audio/wav",
-    ".ogg": "audio/ogg",
-    ".pdf": "application/pdf",
-    ".json": "application/json",
-    ".txt": "text/plain",
-    ".html": "text/html",
-    ".css": "text/css",
-    ".js": "application/javascript",
-    ".zip": "application/zip",
-    ".tar": "application/x-tar",
-    ".gz": "application/gzip",
-  };
-  return map[ext.toLowerCase()] || "application/octet-stream";
+  const result = await db.execute({
+    sql: `DELETE FROM files WHERE id = ?`,
+    args: [id],
+  });
+
+  return result.rowsAffected > 0;
 }

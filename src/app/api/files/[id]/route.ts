@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { getFileMeta, getFileBuffer, getRedirectUrl } from "@/lib/storage";
+import { getFileMeta, getFileBuffer } from "@/lib/storage";
 
 export const dynamic = "force-dynamic";
 
@@ -16,11 +16,6 @@ export async function GET(
         { success: false, error: "File not found" },
         { status: 404 }
       );
-    }
-
-    const redirectUrl = await getRedirectUrl(id);
-    if (redirectUrl) {
-      return Response.redirect(redirectUrl, 302);
     }
 
     const fileBuffer = await getFileBuffer(id);
@@ -44,9 +39,11 @@ export async function GET(
       },
     });
   } catch (error) {
+    const message =
+      error instanceof Error ? error.message : "Internal server error";
     console.error("File serve error:", error);
     return Response.json(
-      { success: false, error: "Internal server error" },
+      { success: false, error: message },
       { status: 500 }
     );
   }
