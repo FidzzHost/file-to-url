@@ -2,7 +2,10 @@ import fs from "fs";
 import path from "path";
 import { v4 as uuidv4 } from "uuid";
 
-const UPLOADS_DIR = path.join(process.cwd(), "uploads");
+const IS_VERCEL = process.env.VERCEL === "1";
+const UPLOADS_DIR = IS_VERCEL
+  ? path.join("/tmp", "uploads")
+  : path.join(process.cwd(), "uploads");
 const META_FILE = path.join(UPLOADS_DIR, "metadata.json");
 
 export interface FileMeta {

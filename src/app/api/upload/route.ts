@@ -71,11 +71,13 @@ export async function POST(request: NextRequest) {
       { status: 201 }
     );
   } catch (error) {
+    const message =
+      error instanceof Error ? error.message : "Unknown error";
     console.error("Upload error:", error);
     return Response.json(
       {
         success: false,
-        error: "Internal server error during upload",
+        error: `Upload failed: ${message}`,
       },
       { status: 500 }
     );
